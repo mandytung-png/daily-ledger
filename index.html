@@ -20,7 +20,7 @@
   <div class="authCard">
     <div class="logo">$</div>
     <h1>日常帳本</h1>
-    <p>登入你的 Google 帳號後，只會開啟你自己的帳本。<br>資料可同步至 Google Sheet，換手機後重新登入即可恢復。</p>
+    <p>第一次使用時登入 Google 即可。之後開啟 App 會優先自動恢復你的帳本。<br>資料可同步至 Google Sheet，換手機時再登入一次即可恢復。</p>
     <button class="googlebtn" onclick="beginGoogleLogin()">使用 Google 登入</button>
     <div id="authMsg" class="small" style="margin-top:12px"></div>
   </div>
@@ -100,12 +100,35 @@ async function beginGoogleLogin(){
 async function restoreGoogleSession(){
   const savedEmail=(localStorage.getItem('bookkeeping_google_email')||'').toLowerCase();
   if(!savedEmail||!CONFIG.ALLOWED_EMAILS.map(x=>x.toLowerCase()).includes(savedEmail))return;
-  if(!window.google?.accounts?.oauth2)return;
-  document.getElementById('authMsg').textContent='正在恢復登入…';
-  const ok=await requestGoogleToken('');
-  if(!ok){
-    document.getElementById('authMsg').textContent='Google 登入狀態已過期，請重新登入一次。';
+
+  // 先用本機記住的帳號立即開啟 App，不再每次重開都卡在登入頁。
+  currentEmail=savedEmail;
+  loadLocal();
+  document.getElementById('authGate').style.display='none';
+  const e=document.getElementById('signedEmail');if(e)e.textContent=currentEmail;
+  setSyncStatus('正在背景恢復 Google 授權…');
+  showView('calendar');
+
+  // 背景嘗試重新取得短期 access token；成功後可直接同步 Google Sheet。
+  if(window.google?.accounts?.oauth2){
+    const ok=await requestGoogleToken('');
+    if(ok){
+      setSyncStatus('Google 已自動恢復登入');
+    }else{
+      // 本機帳本仍可正常使用；只有要雲端同步時才需要重新授權。
+      accessToken='';
+      setSyncStatus('本機已登入；雲端同步需重新授權');
+    }
   }
+}
+async function ensureGoogleAccess(){
+  if(currentEmail&&accessToken)return true;
+  if(!currentEmail)return false;
+  const silent=await requestGoogleToken('');
+  if(silent)return true;
+  const interactive=confirm('Google 授權已失效，需要重新授權一次才能同步 Google Sheet。現在授權嗎？');
+  if(!interactive)return false;
+  return await requestGoogleToken('consent');
 }
 function signOutApp(){
   if(accessToken&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(accessToken,()=>{});
@@ -126,11 +149,11 @@ function serializeRows(){
   return rows;
 }
 async function syncToSheet(){
-  if(!currentEmail||!accessToken){toast('請先登入 Google');return;}
+  if(!(await ensureGoogleAccess())){toast('尚未取得 Google 授權');return;}
   try{setSyncStatus('同步中…');const title=await ensureSheetTab();const rows=serializeRows();await gapi.client.sheets.spreadsheets.values.clear({spreadsheetId:CONFIG.SPREADSHEET_ID,range:`'${title}'!A:I`});await gapi.client.sheets.spreadsheets.values.update({spreadsheetId:CONFIG.SPREADSHEET_ID,range:`'${title}'!A1:I${rows.length}`,valueInputOption:'RAW',resource:{values:rows}});setSyncStatus('最後同步：'+new Date().toLocaleString('zh-TW'));toast('已同步至 Google Sheet');}catch(e){console.error(e);setSyncStatus('同步失敗：'+(e.result?.error?.message||e.message));toast('Google Sheet 同步失敗');}
 }
 async function syncFromSheet(){
-  if(!currentEmail||!accessToken){toast('請先登入 Google');return;}
+  if(!(await ensureGoogleAccess())){toast('尚未取得 Google 授權');return;}
   try{
     setSyncStatus('取得資料中…');
     const title=await ensureSheetTab();
@@ -182,7 +205,7 @@ function catEditorRow(x){return `<div class="row catrow" data-id="${x.id}" style
 function editPayments(){document.getElementById('sheet').innerHTML=`<button class="close" onclick="closeModal()">×</button><h2>付款方式</h2><div id="payEditor">${(db.payments||paymentDefaults).map(x=>`<div class="row payrow" data-id="${x.id}"><div class="two" style="width:100%"><div><label>名稱</label><input class="pname" value="${x.name}"></div><div><label>圖示</label><input class="pemoji" value="${x.emoji}"></div></div></div>`).join('')}</div><button class="btn secondary full" style="margin-top:10px" onclick="addPayRow()">＋ 新增付款方式</button><button class="btn primary full" style="margin-top:10px" onclick="savePays()">儲存付款方式</button>`;openModal()}
 function addPayRow(){document.getElementById('payEditor').insertAdjacentHTML('beforeend',`<div class="row payrow" data-id="new${Date.now()}"><div class="two" style="width:100%"><div><label>名稱</label><input class="pname" value="新付款方式"></div><div><label>圖示</label><input class="pemoji" value="💳"></div></div></div>`)}function savePays(){db.payments=[...document.querySelectorAll('.payrow')].map(r=>({id:r.dataset.id,name:r.querySelector('.pname').value.trim()||'未命名',emoji:r.querySelector('.pemoji').value||'💳'}));save();closeModal();render();toast('付款方式已更新')}
 function openModal(){document.getElementById('modal').classList.add('show')}function closeModal(){document.getElementById('modal').classList.remove('show')}function toast(t){let e=document.getElementById('toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1800)}
-document.getElementById('authGate').style.display='flex';
+if(localStorage.getItem('bookkeeping_google_email')){document.getElementById('authGate').style.display='none';}
 </script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://apis.google.com/js/api.js" async defer></script>
