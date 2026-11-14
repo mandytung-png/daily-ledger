@@ -49,6 +49,40 @@ function freshDb(){return {month:'2026-10',income:60000,savingRate:.25,categorie
 function storageKey(){return KEY+'_'+currentEmail.toLowerCase();}
 function loadLocal(){db=JSON.parse(localStorage.getItem(storageKey())||'null')||freshDb();db.transactions=Array.isArray(db.transactions)?db.transactions.map(x=>({...x,id:String(x.id)})):[];db.categories=(db.categories||[]).map(x=>({...x,active:x.active!==false}));db.payments=db.payments||paymentDefaults.map(x=>({...x}));db.monthlyBudgets=db.monthlyBudgets||{};month=db.month||'2026-10';ensureMonth(month);}
 function save(){if(!db)return;db.month=month;localStorage.setItem(storageKey(),JSON.stringify(db));}
+function exportLocalBackup(){
+  try{
+    if(!currentEmail){alert('目前沒有登入帳號，為避免匯出錯誤資料，已停止。');return;}
+    const key=storageKey();
+    const raw=localStorage.getItem(key);
+    if(!raw){alert('這個帳號目前找不到本機資料，沒有產生備份。請勿同步或初始化帳本。');return;}
+    const parsed=JSON.parse(raw);
+    if(!parsed || typeof parsed!=='object' || !Array.isArray(parsed.transactions)){
+      alert('本機資料格式未通過檢查，沒有產生備份。請先保留目前畫面並聯絡協助。');return;
+    }
+    const payload={
+      backup_type:'daily-ledger-localstorage-readonly',
+      exported_at:new Date().toISOString(),
+      account:currentEmail,
+      storage_key:key,
+      transaction_count:parsed.transactions.length,
+      data:parsed
+    };
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='daily-ledger-backup-'+currentEmail.replace(/[^a-z0-9@._-]/gi,'_')+'-'+new Date().toISOString().slice(0,10)+'.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    alert('已產生本機備份檔。請到「檔案」App 確認檔案已下載，並確認檔案大小不是 0 KB。交易筆數：'+parsed.transactions.length+'。此功能只讀取資料，沒有修改帳本或執行同步。');
+  }catch(e){
+    console.error(e);
+    alert('匯出未完成：'+(e.message||e)+'。原始帳本資料未被本功能修改。');
+  }
+}
+
 const money=n=>'NT$ '+Math.round(n||0).toLocaleString('zh-TW');const monthName=m=>{let[y,mo]=m.split('-');return `${y} 年 ${Number(mo)} 月`};const nextMonth=m=>{let[y,mo]=m.split('-').map(Number);mo++;if(mo===13){y++;mo=1}return y+'-'+String(mo).padStart(2,'0')};
 
 async function waitForGapi(){
@@ -191,7 +225,7 @@ function renderOverview(){let spend=totalSpent(),saving=ensureMonth(month).incom
 function renderCalendar(){let d=new Date(month+'-01T00:00:00'),first=d.getDay(),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();let cells='';for(let i=0;i<first;i++)cells+='<div class="day blank"></div>';for(let n=1;n<=days;n++){let ds=month+'-'+String(n).padStart(2,'0'),sp=db.transactions.filter(x=>x.date===ds).reduce((a,x)=>a+x.amount,0);cells+=`<div class="day" onclick="openDay('${ds}')"><div class="daynum">${n}</div>${sp?`<div class="dayspend">-${money(sp).replace('NT$ ','')}</div>`:''}</div>`}document.getElementById('calendar').innerHTML=`<div class="section"><span>日曆</span></div><div class="calendar"><div class="dow">${['日','一','二','三','四','五','六'].map(x=>`<div>${x}</div>`).join('')}</div><div class="days">${cells}</div></div><div id="dayDetail"></div>`}
 function openDay(ds){let rows=db.transactions.filter(x=>x.date===ds);document.getElementById('dayDetail').innerHTML=`<div class="section"><span>${ds.replaceAll('-','/')} 記帳</span><button class="btn primary" onclick="openAdd('${ds}')">＋ 記一筆</button></div><div class="card">${rows.map(x=>`<div class="row listitem" onclick='editTx(${JSON.stringify(String(x.id))})'><div class="left"><div class="ico">${cat(x.cat).emoji}</div><div><div class="name">${cat(x.cat).name}</div><div class="small">${pay(x.payment).emoji} ${pay(x.payment).name}${x.note?' · '+x.note:''}</div></div></div><div class="money">${money(x.amount)}</div></div>`).join('')||'<div class="empty">這天沒有記帳</div>'}</div>`}
 function renderReports(){let arr=cats().map(x=>({x,s:spent(x.id)})).filter(a=>a.s>0).sort((a,b)=>b.s-a.s);let daysInMonth=new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0).getDate();let daily=Array.from({length:daysInMonth},(_,i)=>{let day=i+1;return db.transactions.filter(x=>x.date.slice(0,7)===month&&Number(x.date.slice(8))===day).reduce((a,x)=>a+x.amount,0)});let max=Math.max(1,...daily);let labelDays=new Set([1,5,10,15,20,25,daysInMonth]);document.getElementById('reports').innerHTML=`<div class="section"><span>報表</span></div><div class="card"><div class="section" style="margin:0 0 5px"><span>本月支出趨勢</span><span class="pill">${money(totalSpent())}</span></div><div class="reportbars" style="gap:3px">${daily.map((s,i)=>{let day=i+1;return `<div class="reportbar" style="min-width:0"><i style="height:${s?Math.max(5,s/max*120):2}px;opacity:${s?1:.18}"></i><span>${labelDays.has(day)?day+'日':''}</span></div>`}).join('')}</div></div><div class="section"><span>分類支出</span></div><div class="card">${arr.map(a=>`<div class="row"><div class="left"><div class="ico">${a.x.emoji}</div><div><div class="name">${a.x.name}</div><div class="small">占本月支出 ${totalSpent()?Math.round(a.s/totalSpent()*100):0}%</div></div></div><div class="money">${money(a.s)}</div></div>`).join('')||'<div class="empty">目前沒有支出資料</div>'}</div><div class="card info"><b>信用卡報表口徑</b><div class="small" style="margin-top:5px">刷卡發生當月算本月支出；該筆刷卡金額會自動成為下一個月的信用卡待付預算。</div></div>`}
-function renderSettings(){document.getElementById('settings').innerHTML=`<div class="section"><span>帳本設定</span></div><div class="card"><div class="authUser"><div><b>Google 帳號</b><div id="signedEmail" class="small">尚未登入</div></div><button class="btn secondary" onclick="signOutApp()">登出</button></div><div class="setting"><div><b>Google Sheet 同步</b><div id="syncStatus" class="syncStatus">尚未同步</div></div><span class="tag taggreen">已連線</span></div><div class="syncButtons"><button class="btn secondary" onclick="syncFromSheet()">↓ 從 Google Sheet 取得</button><button class="btn primary" onclick="syncToSheet()">↑ 同步至 Google Sheet</button></div><div class="small" style="margin-top:10px">你的資料會寫入自己的帳本分頁，不會讀取另一位使用者的帳務。</div><div class="setting"><div><b>帳本起算</b><div class="small">每月 1 日 ～ 月底</div></div><span class="pill">固定</span></div><div class="setting"><div><b>發薪日</b><div class="small">只影響收入入帳，不影響統計週期</div></div><span class="pill">5 日</span></div></div><div class="section"><span>分類與付款方式</span></div><div class="card"><button class="btn secondary full" onclick="editCategories()">編輯支出項目</button><button class="btn secondary full" style="margin-top:8px" onclick="editPayments()">編輯付款方式</button></div>`}
+function renderSettings(){document.getElementById('settings').innerHTML=`<div class="section"><span>帳本設定</span></div><div class="card"><div class="authUser"><div><b>Google 帳號</b><div id="signedEmail" class="small">尚未登入</div></div><button class="btn secondary" onclick="signOutApp()">登出</button></div><div class="setting"><div><b>Google Sheet 同步</b><div id="syncStatus" class="syncStatus">尚未同步</div></div><span class="tag taggreen">已連線</span></div><div class="syncButtons"><button class="btn secondary" onclick="syncFromSheet()">↓ 從 Google Sheet 取得</button><button class="btn primary" onclick="syncToSheet()">↑ 同步至 Google Sheet</button></div><div class="small" style="margin-top:10px">你的資料會寫入自己的帳本分頁，不會讀取另一位使用者的帳務。</div><div class="setting" style="display:block"><b>本機資料備份</b><div class="small" style="margin:6px 0 10px">只讀取目前登入帳號的本機資料，不會修改帳本，也不會同步至 Google Sheet。</div><button class="btn secondary full" onclick="exportLocalBackup()">下載本機 JSON 備份</button></div><div class="setting"><div><b>帳本起算</b><div class="small">每月 1 日 ～ 月底</div></div><span class="pill">固定</span></div><div class="setting"><div><b>發薪日</b><div class="small">只影響收入入帳，不影響統計週期</div></div><span class="pill">5 日</span></div></div><div class="section"><span>分類與付款方式</span></div><div class="card"><button class="btn secondary full" onclick="editCategories()">編輯支出項目</button><button class="btn secondary full" style="margin-top:8px" onclick="editPayments()">編輯付款方式</button></div>`}
 function showView(v){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));document.getElementById(v).classList.add('active');document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x.dataset.view===v));render()}
 function openSettings(){showView('settings')}function moveMonth(n){let[y,m]=month.split('-').map(Number);m+=n;if(m===0){y--;m=12}if(m===13){y++;m=1}month=y+'-'+String(m).padStart(2,'0');ensureMonth(month);save();render()}
 function openAdd(date){editTxId=null;let d=date||month+'-01';document.getElementById('sheet').innerHTML=`<button class="close" onclick="closeModal()">×</button><h2>記一筆</h2><label>日期</label><input id="fdate" type="date" value="${d}"><label>金額</label><input id="famount" type="number" inputmode="decimal" placeholder="0"><label>支出項目</label><select id="fcat">${cats().map(x=>`<option value="${x.id}">${x.emoji} ${x.name}</option>`).join('')}</select><label>付款方式</label><select id="fpay">${(db.payments||paymentDefaults).map(x=>`<option value="${x.id}">${x.emoji} ${x.name}</option>`).join('')}</select><label>備註</label><input id="fnote" placeholder="選填"><div class="actions"><button class="btn secondary" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveTx()">儲存</button></div>`;openModal()}
